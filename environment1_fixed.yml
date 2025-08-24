@@ -1,0 +1,61 @@
+name:  rPPG_demo
+channels:
+  - conda-forge      # 科学栈 + 大部分通用包
+  - pytorch          # 官方 PyTorch 预编译
+  - defaults         # 兜底
+dependencies:
+  # ---- 基础语言 / 内核 ----
+  - python=3.9
+  - ipython
+  - ipykernel
+  - jupyter            # ➜ JupyterLab 也会一并带上
+
+  # ---- 科学计算 / 机器学习 ----
+  - numpy
+  - scipy
+  - pandas
+  - matplotlib
+  - scikit-learn
+  - pytorch            # CPU 或 CUDA 版见安装提示
+  - numexpr
+  - bottleneck
+  - h5py               # HDF5 数据格式支持
+
+  # ---- 图像 / 媒体 ----
+  - pillow
+  - opencv             # <-- Windows 下叫 opencv（conda-forge 提供）  
+
+  # ---- 可视化 / GUI ----
+  - qt-main=5.15.*            # Qt5/Qt6 核心
+  - pyqt
+  - pyqtwebengine
+  - matplotlib-inline  # Jupyter 里绘图后端
+
+  # ---- 开发 & 代码质量 ----
+  - autopep8
+  - black
+  - flake8
+  - isort
+  - pylint
+  - rope
+  - yapf
+  - jinja2
+  - sphinx             # 文档
+
+  # ---- 工具 / 系统库 ----
+  - requests
+  - urllib3
+  - certifi
+  - cryptography
+  - paramiko
+  - tqdm
+  - psutil
+  - lz4-c
+  - zstd
+  - tk                 # Python 自带 GUI，需要时加上
+  - pip                # 让 conda 帮忙管理 pip 包
+
+  # ---- pip-only 包 ----
+  - pip:
+      - mediapipe
+      - gdown
