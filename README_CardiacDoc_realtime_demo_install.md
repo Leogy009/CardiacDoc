@@ -6,7 +6,7 @@
 
 其核心技术包括：
 - 高效、实时的人脸检测。
-- 预训练的3D卷积神经网络 (`N3DED128`)，从面部视频中提取原始的光体积描记（rPPG）信号。
+- 预训练的3D卷积神经网络 (`N3DED128_Enhanced`)，从面部视频中提取原始的光体积描记（rPPG）信号。
 - 对提取的rPPG信号进行滤波、处理和分析，计算各项生理指标。
 - 一个动态仪表盘，实时可视化PPG波形、心率、HRV指标等数据。
 
@@ -17,7 +17,8 @@
 - `realtime_demo.py`: **主程序**。运行此文件以启动应用。
 - `environment1_fixed.yml`: **Conda环境依赖文件**。用于一键创建和配置运行环境。
 - `weight_DLCN_H5_D128.pth.tar`: **模型权重**。预训练的深度学习模型参数。
-- `networks.py`: 定义`N3DED128`等神经网络的结构。
+- `weight_DLCN_H5_D128_enhance.pth.tar`: **增强版模型权重**。预训练的增强版深度学习模型参数。
+- `networks.py`: 定义`N3DED128_Enhanced`等神经网络的结构。
 - `rPPG_Process.py`: 包含了从rPPG信号计算心率和HRV指标的核心算法。
 - `filtering.py`: 提供信号滤波和去噪的辅助函数。
 - `pytorch_datasets.py`: 定义了用于模型训练的数据集类（在实时Demo中未直接使用，但为项目完整性保留）。

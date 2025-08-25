@@ -39,7 +39,7 @@ from collections import deque  # 双端队列，一种高效的数据结构，�
 import argparse # [新增] 导入命令行参数解析库，用于处理用户从命令行传入的参数。
 
 # 导入本地模块
-from networks import N3DED128, N3DED8  #[模型切换] 1. 确保两个模型都已导入
+from networks import N3DED128, N3DED8, N3DED128_Enhanced  #[模型切换] 1. 确保两个模型都已导入
 import rPPG_Process  # 从本地文件导入rPPG信号处理函数。
 import filtering  # 从本地文件导入信号滤波函数。
 
@@ -410,8 +410,9 @@ def main():
     # 创建一个解析器对象
     parser = argparse.ArgumentParser(description='Real-time rPPG demo with selectable models.')
     # 添加 --model_type 参数，允许用户从命令行选择模型
-    parser.add_argument('--model_type', type=str, default='N3DED128', choices=['N3DED8', 'N3DED128'],
-                        help='Select the model to use (N3DED8 or N3DED128).')
+    parser.add_argument('--model_type', type=str, default='N3DED128_Enhanced', 
+                    choices=['N3DED8', 'N3DED128', 'N3DED128_Enhanced'],
+                    help='Select the model to use (N3DED8, N3DED128, or N3DED128_Enhanced).')
     # 解析传入的参数
     args = parser.parse_args()
 
@@ -429,8 +430,14 @@ def main():
     print(f"Using device: {device}")
 
     # 检查用户选择的是哪个模型
-    if args.model_type == 'N3DED128':
-        # 如果是 N3DED128
+    if args.model_type == 'N3DED128_Enhanced':
+        # 如果是增强版 N3DED128
+        print("Loading N3DED128_Enhanced model...")
+        model = N3DED128_Enhanced() #[模型切换] 2. 选择要实例化的模型
+        weights_path = 'weight_DLCN_H5_D128_enhance.pth.tar' #[模型切换] 3. 指定对应的权重文件
+        model_input_size = 128 #[模型切换] 4. 指定对应的输入尺寸
+    elif args.model_type == 'N3DED128':
+        # 如果是原始 N3DED128
         print("Loading N3DED128 model...")
         model = N3DED128() #[模型切换] 2. 选择要实例化的模型
         weights_path = 'weight_DLCN_H5_D128.pth.tar' #[模型切换] 3. 指定对应的权重文件
