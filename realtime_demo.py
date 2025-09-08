@@ -27,6 +27,7 @@ Author: Yongzhi
 # 每个库都有其特定的功能，例如OpenCV用于视频处理，PyTorch用于神经网络，Matplotlib用于绘图。
 
 import cv2  # OpenCV库，用于摄像头访问和基本的图像处理。
+import uuid  # 通用唯一标识符库，用于生成全局唯一ID（UUID），常用于文件/会话/对象等标识。
 import os  # 操作系统库，用于文件路径操作等。
 import numpy as np  # NumPy库，用于高效的数值计算，特别是数组操作。
 import mediapipe as mp  # Google的MediaPipe库，用于高效的人脸检测。
@@ -43,6 +44,19 @@ from networks import N3DED128, N3DED8, N3DED128_Enhanced  #[模型切换] 1. 确
 import rPPG_Process  # 从本地文件导入rPPG信号处理函数。
 import filtering  # 从本地文件导入信号滤波函数。
 
+# === 新增：指标入库（DuckDB/SQLite） ===
+from storage import connect as db_connect, init_db as db_init, upsert_hrv_feature, insert_feature_hash
+from datetime import datetime, timezone, timedelta
+
+# === 新增：LLM交互 ===
+from llm.schemas import validate_input, validate_output, pretty
+from llm.prompt_builder import build_llm_input_payload, compute_confidence_bundle
+from llm.llm_adapter import generate_structured_response
+
+LLM_RESPONSE_STYLE_DEFAULT = "balanced"     # formal / casual / balanced
+LLM_INPUT_LANGUAGE_DEFAULT = "zh-CN"
+LLM_OUTPUT_LANGUAGE_DEFAULT = None          # None -> auto by style
+SAVE_JSON_DUMPS = True
 
 # --- 2. 全局配置 (Configuration) ---
 # 代码段解释: 此代码块定义了整个脚本中使用的所有重要常量和参数。
@@ -57,6 +71,11 @@ BPM_WINDOW_FRAMES = 128      # 用于计算BPM的滑动窗口大小（帧数）�
 METRICS_WINDOW_FRAMES = 256  # 用于计算所有健康指标的滑动窗口大小（帧数）。
 PPG_PLOT_WINDOW_SIZE = 600   # PPG图表上显示的数据点数量。
 PPG_FILTER_CUTOFF = [0.7, 2.8]  # PPG信号带通滤波器的截止频率（Hz），用于滤除噪声并保留心率范围内的信号。
+
+# === Storage / Window metadata config（新增） ===
+DB_PATH = "hrv_data.duckdb"   # DuckDB 文件；若要用 SQLite：export HRV_DB_BACKEND=sqlite
+WINDOW_OVERLAP = 0.5          # 仅用于入库的 sampling_spec 元数据；若工程已有 overlap 变量，就把它赋给这里
+ENV_LABEL_DEFAULT = "rest"    # 默认环境标签；上层若有更准确的情景识别会覆盖
 
 # 在没有实时数据时显示的默认健康指标，提供更友好的初始界面
 DEFAULT_METRICS = {
@@ -483,6 +502,13 @@ def main():
     if not cap.isOpened(): # 检查摄像头是否成功打开。
         print(f"Error: Cannot open webcam ID {WEBCAM_ID}.")
         return
+    
+    # === 新增：初始化数据库连接与建表（进入 while True 之前） ===
+    DB_PATH = "hrv_data.duckdb"  # 如需 SQLite：export HRV_DB_BACKEND=sqlite
+    db_conn = db_connect(DB_PATH)
+    db_init(db_conn)
+    # ==============================================================
+
 
     # --- 数据缓冲区和状态变量 ---
     # 代码段解释: 此代码块初始化了主循环中需要用到的所有变量。
@@ -587,6 +613,118 @@ def main():
                     data_store['ppg_plot_buffer'] = list(new_ppg_deque)
 
                 working_data, measures = rPPG_Process.process(metrics_signal, sample_rate)
+
+                # === 新增：指标入库（与当前计算窗口自动对齐） =============================
+                # 1) 以“本次参与计算的序列长度”反推窗口秒数，避免硬编码 60s
+                try:
+                    _win_len_sec = float(len(metrics_signal)) / float(sample_rate) if sample_rate else None
+                except Exception:
+                    _win_len_sec = None
+
+                # 2) 时间戳对齐：以“当前时刻”为 window_end，回溯窗口秒数得到 window_start
+                now_utc = datetime.now(timezone.utc)
+                window_end = now_utc.isoformat()
+                if _win_len_sec and _win_len_sec > 0:
+                    window_start_dt = now_utc - timedelta(seconds=_win_len_sec)
+                    window_length = float(_win_len_sec)
+                else:
+                    # 回退：若无法计算长度，保持与你现有设置一致（例如已有 WINDOW_SECONDS 变量）
+                    # 如果你的代码没有这个变量，保留 60 只作为兜底；不会影响已有逻辑
+                    WINDOW_SECONDS = globals().get("WINDOW_SECONDS", 60)
+                    window_start_dt = now_utc - timedelta(seconds=WINDOW_SECONDS)
+                    window_length = float(WINDOW_SECONDS)
+
+                window_start = window_start_dt.isoformat()
+
+                # 3) 采样规范（写入 sampling_spec 便于复现）
+                # - 若你已有滑窗重叠变量（如 overlap_ratio / hop_size），可替换下面的 0.5 为你的变量
+                _sampling_overlap = globals().get("WINDOW_OVERLAP", 0.5)
+                sampling_spec = f"len={window_length:.0f}s;overlap={int(_sampling_overlap*100)}%;sr={float(sample_rate):.2f}Hz"
+
+                # 4) 派生 SD1/SD2 比值（若未返回）
+                sd1 = measures.get("sd1"); sd2 = measures.get("sd2")
+                sd1_sd2_ratio = measures.get("sd1_sd2_ratio")
+                if sd1_sd2_ratio is None and sd1 is not None and sd2 not in (None, 0):
+                    sd1_sd2_ratio = sd1 / sd2
+
+                # 5) 组织入库行（字段名与 storage.init_db 的列一致）
+                row = {
+                    "patient_id":       str(globals().get("user_id", "demo")),  # 如有用户ID上下文可替换
+                    "window_start":     window_start,
+                    "window_end":       window_end,
+                    "window_length":    window_length,
+                    "env_label":        measures.get("env_label", globals().get("ENV_LABEL_DEFAULT", "rest")),
+
+                    "rmssd":            measures.get("rmssd"),
+                    "sdnn":             measures.get("sdnn"),
+                    "pnn50":            measures.get("pnn50"),
+                    "sd1":              sd1,
+                    "sd2":              sd2,
+                    "sd1_sd2_ratio":    sd1_sd2_ratio,
+
+                    "lf":               measures.get("lf"),
+                    "hf":               measures.get("hf"),
+                    "lf_hf_ratio":      measures.get("lf_hf_ratio"),
+
+                    "hti":              measures.get("hti"),
+                    "rhythm_status":    measures.get("rhythm_status"),
+
+                    "pwv":              measures.get("pwv"),
+                    "aix":              measures.get("aix"),
+                    "vascular_status":  measures.get("vascular_status"),
+
+                    "stress_index":     measures.get("stress_index"),
+                    "stress_level":     measures.get("stress_level"),
+                    "anxiety_score":    measures.get("anxiety_score"),
+                    "anxiety_level":    measures.get("anxiety_level"),
+
+                    "sampling_spec":    sampling_spec,
+                    "notes":            measures.get("notes"),
+                }
+
+                # 6) 幂等入库 + 哈希摘要
+                rec = upsert_hrv_feature(db_conn, row)                 # 返回 {id, feature_key}
+                insert_feature_hash(db_conn, rec["feature_key"], row)  # 记录 SHA-256 与 LSH 桶
+                # ======================================================================
+
+                history_rows = []
+                try:
+                    from query_aggregator import create_connection, query_hrv_rows
+                    _conn = create_connection(DB_PATH)
+                    hist = query_hrv_rows(
+                        _conn,
+                        patient_id=row["patient_id"],
+                        start_time=(window_start_dt - timedelta(minutes=30)).isoformat(),
+                        end_time=window_end
+                    )
+                    history_rows = sorted(hist, key=lambda x: x.get("window_start",""), reverse=True)
+                except Exception:
+                    history_rows = []
+
+                # === 5) 组装 LLM 输入并调用 API ===
+                llm_input = build_llm_input_payload(
+                    interaction_id=str(uuid.uuid4()),
+                    patient_id=row["patient_id"],
+                    now_iso=window_end,
+                    measures={**row, "feature_key": rec["feature_key"]},
+                    symptom_description=globals().get("SYMPTOM_DESCRIPTION", "未提供主诉"),
+                    response_style=LLM_RESPONSE_STYLE_DEFAULT,
+                    input_language=LLM_INPUT_LANGUAGE_DEFAULT,
+                    output_language=LLM_OUTPUT_LANGUAGE_DEFAULT,
+                    return_explanations=True,
+                    history_rows=history_rows,
+                    signal_quality=measures.get("sqi")
+                )
+
+                llm_output = generate_structured_response(llm_input)
+
+                # === 6) （可选）保存 JSON / 展示到 UI ===
+                os.makedirs("out", exist_ok=True)
+                with open("out/llm_input_latest.json", "w", encoding="utf-8") as f:
+                    f.write(pretty(llm_input))
+                with open("out/llm_output_latest.json", "w", encoding="utf-8") as f:
+                    f.write(pretty(llm_output))
+
 
                 # [核心逻辑] 只有当计算出的BPM有效时，才更新data_store
                 if measures.get('BPM', 0) > 30:
